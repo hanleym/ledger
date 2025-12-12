@@ -67,6 +67,19 @@ dispute, 1, 1,
 }
 
 #[test]
+fn test_dispute_missing_transaction() -> Result<()> {
+    table_test(
+        r#"type, client, tx, amount
+deposit, 1, 1, 5
+dispute, 1, 2,
+"#,
+        r#"client,available,held,total,locked
+1,5,0,5,false
+"#,
+    )
+}
+
+#[test]
 fn test_dispute_other_client_transaction() -> Result<()> {
     table_test(
         r#"type, client, tx, amount
@@ -110,6 +123,19 @@ resolve, 1, 1,
 }
 
 #[test]
+fn test_resolve_undisputed() -> Result<()> {
+    table_test(
+        r#"type, client, tx, amount
+deposit, 1, 1, 5
+resolve, 1, 1,
+"#,
+        r#"client,available,held,total,locked
+1,5,0,5,false
+"#,
+    )
+}
+
+#[test]
 fn test_chargeback() -> Result<()> {
     table_test(
         r#"type, client, tx, amount
@@ -134,6 +160,19 @@ chargeback, 1, 1,
 "#,
         r#"client,available,held,total,locked
 1,0,0,0,true
+"#,
+    )
+}
+
+#[test]
+fn test_chargeback_undisputed() -> Result<()> {
+    table_test(
+        r#"type, client, tx, amount
+deposit, 1, 1, 5
+chargeback, 1, 1,
+"#,
+        r#"client,available,held,total,locked
+1,5,0,5,false
 "#,
     )
 }

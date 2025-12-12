@@ -53,12 +53,12 @@ impl AccountProjector {
     }
 
     pub fn read_csv<R: std::io::Read>(reader: R) -> Result<Self> {
-        let mut reader = csv::ReaderBuilder::new()
-            .trim(csv::Trim::All)
-            .from_reader(reader);
+        let mut reader = csv::ReaderBuilder::new().trim(csv::Trim::All).from_reader(reader);
         let mut accounts = Self::new();
         for event in reader.deserialize() {
-            let result = event.map(|e| accounts.project(&e));
+            let result = event
+                .context("Failed to deserialize a CSV record")
+                .and_then(|e| accounts.project(&e));
             if let Err(err) = result {
                 eprintln!("{err}");
             }
