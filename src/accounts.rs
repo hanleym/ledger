@@ -1,5 +1,5 @@
-use crate::event_store::{Event, EventType, Projector};
-use crate::{ClientID, Money, TransactionID};
+use crate::events::{Event, EventType::*};
+use crate::{ClientID, Money, Projector, TransactionID};
 use anyhow::{Context, Result, anyhow};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -21,26 +21,6 @@ pub struct Output {
     locked: bool,
 }
 
-#[cfg(test)]
-impl Output {
-    pub fn new<M: Into<Money>, H: Into<Money>>(
-        client: ClientID,
-        available: M,
-        held: H,
-        locked: bool,
-    ) -> Self {
-        let available = available.into();
-        let held = held.into();
-        Self {
-            client,
-            available,
-            held,
-            total: available + held,
-            locked,
-        }
-    }
-}
-
 impl From<(ClientID, Account)> for Output {
     fn from((client, account): (ClientID, Account)) -> Self {
         Self {
@@ -54,15 +34,36 @@ impl From<(ClientID, Account)> for Output {
 }
 
 #[derive(Debug, Clone)]
-pub struct BalanceSheet {
+pub struct AccountProjector {
     accounts: BTreeMap<ClientID, Account>,
+    deposits: BTreeMap<TransactionID, (ClientID, Money)>,
 }
 
-impl BalanceSheet {
+impl AccountProjector {
     pub fn new() -> Self {
         Self {
-            accounts: BTreeMap::new(),
+            accounts: Default::default(),
+            deposits: Default::default(),
         }
+    }
+
+    pub fn stream_csv<R: std::io::Read, W: std::io::Write>(reader: R, writer: W) -> Result<()> {
+        let accounts = Self::read_csv(reader)?;
+        accounts.write_csv(writer)
+    }
+
+    pub fn read_csv<R: std::io::Read>(reader: R) -> Result<Self> {
+        let mut reader = csv::ReaderBuilder::new()
+            .trim(csv::Trim::All)
+            .from_reader(reader);
+        let mut accounts = Self::new();
+        for event in reader.deserialize() {
+            let result = event.map(|e| accounts.project(&e));
+            if let Err(err) = result {
+                eprintln!("{err}");
+            }
+        }
+        Ok(accounts)
     }
 
     pub fn write_csv<W: std::io::Write>(self, writer: W) -> Result<()> {
@@ -77,25 +78,38 @@ impl BalanceSheet {
     }
 }
 
-impl Projector for BalanceSheet {
+impl Projector for AccountProjector {
     fn project(&mut self, event: &Event) -> Result<()> {
         let account = self.accounts.entry(event.client).or_default();
         if account.locked {
             return Err(anyhow!("Account locked: {}", event.client));
         }
-        let amount = event.amount.unwrap_or_default();
+        let mut amount = event.amount.unwrap_or_default();
+
+        if matches!(event._type, Dispute | Resolve | Chargeback) {
+            let deposit = self
+                .deposits
+                .get(&event.tx)
+                .ok_or_else(|| anyhow!("Transaction not found; skipping."))?;
+            if deposit.0 != event.client {
+                return Err(anyhow!("Transaction not owned by client: {}", event.tx));
+            }
+            amount = deposit.1;
+        }
+
         match event._type {
-            EventType::Deposit => {
+            Deposit => {
+                self.deposits.insert(event.tx, (event.client, amount));
                 account.available += amount;
             }
-            EventType::Withdrawal => {
+            Withdrawal => {
                 if account.available >= amount {
                     account.available -= amount;
                 } else {
                     return Err(anyhow!("Insufficient funds for withdrawal: {}", amount));
                 }
             }
-            EventType::Dispute => {
+            Dispute => {
                 if account.disputed.contains(&event.tx) {
                     return Err(anyhow!("Transaction already disputed: {}", event.tx));
                 }
@@ -103,7 +117,7 @@ impl Projector for BalanceSheet {
                 account.available -= amount;
                 account.held += amount;
             }
-            EventType::Resolve => {
+            Resolve => {
                 if !account.disputed.contains(&event.tx) {
                     return Err(anyhow!("Transaction not disputed: {}", event.tx));
                 }
@@ -111,7 +125,7 @@ impl Projector for BalanceSheet {
                 account.available += amount;
                 account.held -= amount;
             }
-            EventType::Chargeback => {
+            Chargeback => {
                 if !account.disputed.contains(&event.tx) {
                     return Err(anyhow!("Transaction not disputed: {}", event.tx));
                 }
@@ -121,12 +135,5 @@ impl Projector for BalanceSheet {
             }
         }
         Ok(())
-    }
-}
-
-#[cfg(test)]
-impl BalanceSheet {
-    pub fn into_output(self) -> Vec<Output> {
-        self.accounts.into_iter().map(Output::from).collect()
     }
 }
