@@ -2,7 +2,7 @@
 
 ## Run
 
-    nix run .#ledger -- tests/transactions.csv > accounts.csv
+    nix run .#ledger -- transactions.csv > accounts.csv
 
 OR
 
